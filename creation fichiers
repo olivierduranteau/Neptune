@@ -1,0 +1,1048 @@
+################################################
+#                                              #
+# Ecrit par Jean Urung                         #
+# Commenté et annoté par Olivier Duranteau     #
+# Corrigé par Axel Abels                       #
+#                                              #
+################################################
+
+###################################################################
+# importation des différents modules et affichage de la procédure # 
+###################################################################
+
+# importation des différents modules permettant la réalisation de la préparation des données
+import pandas as pd
+import numpy as np
+import datetime
+from tqdm import tqdm
+import pdb
+import os
+import sys
+import warnings
+warnings.filterwarnings("ignore")
+
+
+##############################################
+# Retrait des valeurs nulles et des doublons #
+##############################################
+
+# Utilisation de la fonction pandas.DataFrame.dropna qui permet de retirer les valeurs manquantes des tableaux bruts
+# Utilisation du module pandas
+# Création de la fonction cleanDataframe qui supprime les valeurs manquantes puis dans un second temps qui supprime les doublons.
+
+def cleanDataframe(df):
+    df = df.dropna(axis=0, how="all")                                       # axis=0 permet de supprimer les lignes qui ont des valeurs vides ou nulles (ici les mesures biologiques)
+    df = df.dropna(axis=1, how="all")                                       # axis=1 permet de supprimer les colonnes qui ont des valeurs vides ou nulles
+    df = df.drop_duplicates()                                               # how = "all" permet de ne sélectionner que les colonnes ou les lignes qui ont toutes les valeurs comme vides ou nulles
+    return df
+
+
+###################################
+# Nettoyage des dates et heures   #
+###################################
+
+def strToTime(value, format="%Y-%m-%d %H:%M:%S"):                           # création d'une fonction qui permet de convertir les dates au format str en format date + time
+    if isinstance(value, str):                                              # utilisation de la fonction booléenne de Numpy
+        if not isinstance(format, list):
+            format = [format]
+        for f in format:
+            try:
+                return datetime.datetime.strptime(value, f)                 # datetime.datetime = Une combinaison d'une date et d'une heure. Attributs : year, month, day, hour, minute, second, microsecond, et tzinfo.
+            except:
+                cprint(f, "FAILED with", value)                             # cprint permet d'afficher en couleur la présence d'un bug
+        raise ValueError("no time format fit with", value)                  # définit l'exception ValueError en lui demandant de faire apparaitre "no time format fit with"
+    else:
+        return [strToTime(v, format) for v in value]
+
+
+# nan = Not a number
+# création de la fonction formatTime
+# dans metavision il y avait 2 formats de date :
+#                   soit avec des / et un format sous la forme d, m, y
+#                   soit avec des - et un format sous la forme y, m, d
+
+def formatTime(time):
+    if str(time) == 'nan':
+        return np.nan                                                       # permet d'éliminer toutes les valeurs n'étant pas des nombres dans la matrice
+    if isinstance(time, list):
+        return [formatTime(t) for t in time]
+    else:
+        try:
+            date, heure = time.split(" ")
+        except:
+            date, heure = time, "00:00"
+        d, m, y = date.split("/")                                           # split la date avec des/
+        h, minute = heure.split(":")                                        # split les minutes avec des : 
+        l = [int(y), int(m), int(d), int(h), int(minute)]
+        time = datetime.datetime(*l)
+        return time
+
+#################################################################
+# Récupération de la valeur précédente et suivante              #
+# Utilisation du module pandas                                  #
+# Utilisation de la formule pandas.index.duplicated             #
+#       Défini avec le paramètre (keep=)                        #
+# Utilisation de la formule pandas.index.get_loc.               #
+#       Défini avec les paramètres (Key, method, tolerance)     #
+#                                                               #
+#################################################################
+
+def getDelaiValeurFromHour(df, heure, val_index=3, return_index=False): # Axel: si les colonnes sont nomées il vaut mieux utiliser le nom de la colonne plutôt que l'indice (par souci de clarté)
+    d = {}
+    df.index = formatTime(list(df.index))
+    df = df[~df.index.duplicated(keep='first')].sort_index()                # en cas de doublon, instruction de ne garder que la première valeur
+    try:
+        ind_before = df.index.get_loc(heure, method='ffill')                # ffil = find the PREVIOUS index value if no exact match
+        d['delai avant'] = heure-df.index[ind_before]                       # permet de récupérer le délais en faisant la soustraction entre l'heure de la transfusion et l'heure du prélèvement
+        d['valeur avant'] = df.iloc[ind_before, val_index]                  # permet de récupérer la valeur associée
+        if return_index:
+            d['index avant'] = ind_before
+    except:
+        pass
+    try:
+        ind_after = df.index.get_loc(heure, method='backfill')              # bfill = use NEXT index value if no exact match
+        d['delai apres'] = df.index[ind_after]-heure                        # permet de récupérer le délais en faisant la soustraction entre l'heure du prélèvement @ l'heure de la transfusion
+        d['valeur apres'] = df.iloc[ind_after, val_index]                   # permet de récupérer la valeur associée
+        if return_index:
+            d['index apres'] = ind_after
+    except:
+        pass
+    return d
+
+#########################################
+# Définition du répertoire de travail   #
+#########################################
+
+datapath = "."
+
+outdir = os.path.join(datapath, 'out')                                      # utilisation du sous-dossier 'out' pour enregistrer les fichiers
+if not os.path.isfile(os.path.join(outdir, "output.csv")) or '-force' in sys.argv:      # forcer la création d'un fichier output.csv dans le sous dossier out
+
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Calcium                             #########################
+########################################################################################################## 
+##########################################################################################################
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_calcium = pd.read_csv(os.path.join(datapath, "calcium.csv"), encoding="latin-1", sep=';', index_col=[0, 3, 9], header=5)
+    csv_calcium = cleanDataframe(csv_calcium)
+    patients_inCalcium = np.unique(csv_calcium.index.get_level_values(0).astype(str)) 
+
+    
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_calcium = patient in patients_inCalcium                                 # Récupère le nom du patient dans le fichier du calcium
+        
+        count = {t: 0 for t in transfusions}
+
+        sub_trans = csv_transfusion.loc[patient]
+        sub_calcium = None
+        if get_calcium:
+            sub_calcium = csv_calcium.loc[patient]
+            
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_calcium], [sub_calcium]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False) 
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    
+    
+    outdf.to_csv(os.path.join(datapath, "data_calcium_temp.csv"), sep='\t', encoding="latin-1")
+    
+    ca_data = pd.read_csv(os.path.join(datapath, "data_calcium_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    ca_data.columns = ['Nom', 'Type', 'heure', 'ca_del_avt', 'ca_avt', 'ca_del_ap', 'ca_ap', 'caio_del_ap', 'caio_ap', 'caio_del_avt', 'caio_avt']
+    
+    ca_data['Type'] = ca_data['Type'].astype(str).str[:8]
+    
+    ca_data_df = pd.DataFrame(ca_data)
+
+    ca_data_groupby = ca_data_df.groupby(by=['Nom', 'ca_avt', 'Type']).size()
+    ca_data_groupby_df = ca_data_groupby.to_frame()
+    ca_data_groupby_df_pivot = pd.pivot_table(ca_data_groupby_df, index=['Nom', 'ca_avt'], columns=['Type'], aggfunc=np.sum)
+    ca_merged = ca_data_groupby_df_pivot.merge(ca_data, on=['Nom','ca_avt'])
+    ca_drop = ca_merged.drop(['Type', 'caio_del_ap', 'caio_ap', 'caio_del_avt', 'caio_avt'], axis=1)
+    ca_final = ca_drop.drop_duplicates(subset =['Nom', 'ca_avt'])
+  
+    ca_final.to_csv(os.path.join(datapath, "data_calcium.csv"), sep='\t', encoding="latin-1")
+    
+    
+    
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Calcium ionisé                      #########################
+########################################################################################################## 
+########################################################################################################## 
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_calcium = pd.read_csv(os.path.join(datapath, "calcium.csv"), encoding="latin-1", sep=';', index_col=[0, 3, 9], header=5)
+    csv_calcium = cleanDataframe(csv_calcium)
+    patients_inCalcium = np.unique(csv_calcium.index.get_level_values(0).astype(str)) 
+
+    
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_calcium = patient in patients_inCalcium                                 # Récupère le nom du patient dans le fichier du calcium
+        
+        count = {t: 0 for t in transfusions}
+
+        sub_trans = csv_transfusion.loc[patient]
+        sub_calcium = None
+        if get_calcium:
+            sub_calcium = csv_calcium.loc[patient]
+            
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_calcium], [sub_calcium]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False) 
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    
+    outdf.to_csv(os.path.join(datapath, "data_calciumionise_temp.csv"), sep='\t', encoding="latin-1")
+    
+    caio_data = pd.read_csv(os.path.join(datapath, "data_calciumionise_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    caio_data.columns = ['Nom', 'Type', 'heure', 'ca_del_avt', 'ca_avt', 'ca_del_ap', 'ca_ap', 'caio_del_ap', 'caio_ap', 'caio_del_avt', 'caio_avt']
+    
+    caio_data['Type'] = caio_data['Type'].astype(str).str[:8]
+    
+    caio_data_df = pd.DataFrame(caio_data)
+
+    caio_data_groupby = caio_data_df.groupby(by=['Nom', 'caio_avt', 'Type']).size()
+    caio_data_groupby_df = caio_data_groupby.to_frame()
+    caio_data_groupby_df_pivot = pd.pivot_table(caio_data_groupby_df, index=['Nom', 'caio_avt'], columns=['Type'], aggfunc=np.sum)
+    caio_merged = caio_data_groupby_df_pivot.merge(caio_data, on=['Nom','caio_avt'])
+    caio_drop = caio_merged.drop(['Type', 'ca_del_ap', 'ca_ap', 'ca_del_avt', 'ca_avt'], axis=1)
+    caio_final = caio_drop.drop_duplicates(subset =['Nom', 'caio_avt'])
+  
+    caio_final.to_csv(os.path.join(datapath, "data_calciumionise.csv"), sep='\t', encoding="latin-1")
+    
+    
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Fibrinogène                         #########################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_fibri = pd.read_csv(os.path.join(datapath, "fibri.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_fibri = cleanDataframe(csv_fibri)
+    patients_inFibri = np.unique(csv_fibri.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_fibri = patient in patients_inFibri
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_fibri = None
+        if get_fibri:
+            sub_fibri = csv_fibri.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_fibri], [ sub_fibri]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_fibri_temp.csv"), sep='\t', encoding="latin-1")
+    
+    fibri_data = pd.read_csv(os.path.join(datapath, "data_fibri_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    fibri_data.columns = ['Nom', 'Type', 'heure', 'fibri_del_avt', 'fibri_avt', 'fibri_del_ap', 'fibri_ap']
+    
+    fibri_data['Type'] = fibri_data['Type'].astype(str).str[:8]
+    fibri_data_df = pd.DataFrame(fibri_data)
+
+    fibri_data_groupby = fibri_data_df.groupby(by=['Nom', 'fibri_avt', 'Type']).size()
+    fibri_data_groupby_df = fibri_data_groupby.to_frame()
+    fibri_data_groupby_df_pivot = pd.pivot_table(fibri_data_groupby_df, index=['Nom', 'fibri_avt'], columns=['Type'], aggfunc=np.sum)
+    fibri_merged = fibri_data_groupby_df_pivot.merge(fibri_data, on=['Nom','fibri_avt'])
+    fibri_drop = fibri_merged.drop(['Type'], axis=1)
+    fibri_final = fibri_drop.drop_duplicates(subset =['Nom', 'fibri_avt'])
+  
+    fibri_final.to_csv(os.path.join(datapath, "data_fibri.csv"), sep='\t', encoding="latin-1")
+    
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Globules rouges                         #####################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_gr = pd.read_csv(os.path.join(datapath, "gr.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_gr = cleanDataframe(csv_gr)
+    patients_inGr = np.unique(csv_gr.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_gr = patient in patients_inGr
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_gr = None
+        if get_gr:
+            sub_gr = csv_gr.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_gr], [ sub_gr]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_gr_temp.csv"), sep='\t', encoding="latin-1")
+    
+    gr_data = pd.read_csv(os.path.join(datapath, "data_gr_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    gr_data.columns = ['Nom', 'Type', 'heure', 'gr_del_avt', 'gr_avt', 'gr_del_ap', 'gr_ap']
+    
+    gr_data['Type'] = gr_data['Type'].astype(str).str[:8]
+    gr_data_df = pd.DataFrame(gr_data)
+
+    gr_data_groupby = gr_data_df.groupby(by=['Nom', 'gr_avt', 'Type']).size()
+    gr_data_groupby_df = gr_data_groupby.to_frame()
+    gr_data_groupby_df_pivot = pd.pivot_table(gr_data_groupby_df, index=['Nom', 'gr_avt'], columns=['Type'], aggfunc=np.sum)
+    gr_merged = gr_data_groupby_df_pivot.merge(gr_data, on=['Nom','gr_avt'])
+    gr_drop = gr_merged.drop(['Type'], axis=1)
+    gr_final = gr_drop.drop_duplicates(subset =['Nom', 'gr_avt'])
+  
+    gr_final.to_csv(os.path.join(datapath, "data_gr.csv"), sep='\t', encoding="latin-1")
+
+
+    
+        
+##########################################################################################################    
+##########################################################################################################   
+###########                                  hémoglobine.                        #########################
+########################################################################################################## 
+########################################################################################################## 
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_hemoglobine = pd.read_csv(os.path.join(datapath, "hb.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_hemoglobine = cleanDataframe(csv_hemoglobine)
+    patients_inHemoglobine = np.unique(csv_hemoglobine.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_hemo = patient in patients_inHemoglobine
+
+        count = {t: 0 for t in transfusions}
+
+        sub_trans = csv_transfusion.loc[patient]
+        sub_hemo = None
+
+        if get_hemo:
+            sub_hemo = csv_hemoglobine.loc[patient]
+
+            
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_hemo], [sub_hemo]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            outdf[(patient, transfusion)][(param, k)] = v
+                           
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False) 
+    
+###################################################### 
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    
+    outdf.to_csv(os.path.join(datapath, "data_hb_temp.csv"), sep='\t', encoding="latin-1")
+    
+
+    hb_data = pd.read_csv(os.path.join(datapath, "data_hb_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    hb_data.columns = ['Nom', 'Type', 'heure', 'hb_del_avt', 'hb_avt', 'hb_del_ap', 'hb_ap']
+    
+    hb_data['Type'] = hb_data['Type'].astype(str).str[:8]
+    hb_data_df = pd.DataFrame(hb_data)
+
+    hb_data_groupby = hb_data_df.groupby(by=['Nom', 'hb_avt', 'Type']).size()
+    hb_data_groupby_df = hb_data_groupby.to_frame()
+    hb_data_groupby_df_pivot = pd.pivot_table(hb_data_groupby_df, index=['Nom', 'hb_avt'], columns=['Type'], aggfunc=np.sum)
+    hb_merged = hb_data_groupby_df_pivot.merge(hb_data, on=['Nom','hb_avt'])
+    hb_drop = hb_merged.drop(['Type'], axis=1)
+    hb_final = hb_drop.drop_duplicates(subset =['Nom', 'hb_avt'])
+  
+    hb_final.to_csv(os.path.join(datapath, "data_hb.csv"), sep='\t', encoding="latin-1")
+    
+    
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Hématocrite                         #########################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_ht = pd.read_csv(os.path.join(datapath, "ht.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_ht = cleanDataframe(csv_ht)
+    patients_inHt = np.unique(csv_ht.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_ht = patient in patients_inHt
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_ht = None
+        if get_ht:
+            sub_ht = csv_ht.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_ht], [ sub_ht]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_ht_temp.csv"), sep='\t', encoding="latin-1")
+    
+    ht_data = pd.read_csv(os.path.join(datapath, "data_ht_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    ht_data.columns = ['Nom', 'Type', 'heure', 'ht_del_avt', 'ht_avt', 'ht_del_ap', 'ht_ap']
+    
+    ht_data['Type'] = ht_data['Type'].astype(str).str[:8]
+    ht_data_df = pd.DataFrame(ht_data)
+
+    ht_data_groupby = ht_data_df.groupby(by=['Nom', 'ht_avt', 'Type']).size()
+    ht_data_groupby_df = ht_data_groupby.to_frame()
+    ht_data_groupby_df_pivot = pd.pivot_table(ht_data_groupby_df, index=['Nom', 'ht_avt'], columns=['Type'], aggfunc=np.sum)
+    ht_merged = ht_data_groupby_df_pivot.merge(ht_data, on=['Nom','ht_avt'])
+    ht_drop = ht_merged.drop(['Type'], axis=1)
+    ht_final = ht_drop.drop_duplicates(subset =['Nom', 'ht_avt'])
+  
+    ht_final.to_csv(os.path.join(datapath, "data_ht.csv"), sep='\t', encoding="latin-1")
+
+##########################################################################################################    
+##########################################################################################################   
+###########                                  INR                                 #########################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_inr = pd.read_csv(os.path.join(datapath, "inr.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_inr = cleanDataframe(csv_inr)
+    patients_inInr = np.unique(csv_inr.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_inr = patient in patients_inInr
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_inr = None
+        if get_inr:
+            sub_inr = csv_inr.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_inr], [ sub_inr]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_inr_temp.csv"), sep='\t', encoding="latin-1")
+    
+    inr_data = pd.read_csv(os.path.join(datapath, "data_inr_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    inr_data.columns = ['Nom', 'Type', 'heure', 'inr_del_avt', 'inr_avt', 'inr_del_ap', 'inr_ap']
+    
+    inr_data['Type'] = inr_data['Type'].astype(str).str[:8]
+    inr_data_df = pd.DataFrame(inr_data)
+
+    inr_data_groupby = inr_data_df.groupby(by=['Nom', 'inr_avt', 'Type']).size()
+    inr_data_groupby_df = inr_data_groupby.to_frame()
+    inr_data_groupby_df_pivot = pd.pivot_table(inr_data_groupby_df, index=['Nom', 'inr_avt'], columns=['Type'], aggfunc=np.sum)
+    inr_merged = inr_data_groupby_df_pivot.merge(inr_data, on=['Nom','inr_avt'])
+    inr_drop = inr_merged.drop(['Type'], axis=1)
+    inr_final = inr_drop.drop_duplicates(subset =['Nom', 'inr_avt'])
+  
+    inr_final.to_csv(os.path.join(datapath, "data_inr.csv"), sep='\t', encoding="latin-1")
+
+
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Lactate                             #########################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_lactate = pd.read_csv(os.path.join(datapath, "lactate.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_lactate = cleanDataframe(csv_lactate)
+    patients_inLactate = np.unique(csv_lactate.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_lactate = patient in patients_inLactate
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_lactate = None
+        if get_lactate:
+            sub_lactate = csv_lactate.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_lactate], [ sub_lactate]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_lactate_temp.csv"), sep='\t', encoding="latin-1")
+    
+    lactate_data = pd.read_csv(os.path.join(datapath, "data_lactate_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    lactate_data.columns = ['Nom', 'Type', 'heure', 'lactate_del_avt', 'lactate_avt', 'lactate_del_ap', 'lactate_ap']
+    
+    lactate_data['Type'] = lactate_data['Type'].astype(str).str[:8]
+    lactate_data_df = pd.DataFrame(lactate_data)
+
+    lactate_data_groupby = lactate_data_df.groupby(by=['Nom', 'lactate_avt', 'Type']).size()
+    lactate_data_groupby_df = lactate_data_groupby.to_frame()
+    lactate_data_groupby_df_pivot = pd.pivot_table(lactate_data_groupby_df, index=['Nom', 'lactate_avt'], columns=['Type'], aggfunc=np.sum)
+    lactate_merged = lactate_data_groupby_df_pivot.merge(lactate_data, on=['Nom','lactate_avt'])
+    lactate_drop = lactate_merged.drop(['Type'], axis=1)
+    lactate_final = lactate_drop.drop_duplicates(subset =['Nom', 'lactate_avt'])
+  
+    lactate_final.to_csv(os.path.join(datapath, "data_lactate.csv"), sep='\t', encoding="latin-1")
+
+
+##########################################################################################################    
+##########################################################################################################   
+###########                                  pH                                  #########################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_ph = pd.read_csv(os.path.join(datapath, "ph.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_ph = cleanDataframe(csv_ph)
+    patients_inPh = np.unique(csv_ph.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_ph = patient in patients_inPh
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_ph = None
+        if get_ph:
+            sub_ph = csv_ph.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_ph], [ sub_ph]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_ph_temp.csv"), sep='\t', encoding="latin-1")
+    
+    ph_data = pd.read_csv(os.path.join(datapath, "data_ph_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    ph_data.columns = ['Nom', 'Type', 'heure', 'ph_del_avt', 'ph_avt', 'ph_del_ap', 'ph_ap']
+    
+    ph_data['Type'] = ph_data['Type'].astype(str).str[:8]
+    ph_data_df = pd.DataFrame(ph_data)
+
+    ph_data_groupby = ph_data_df.groupby(by=['Nom', 'ph_avt', 'Type']).size()
+    ph_data_groupby_df = ph_data_groupby.to_frame()
+    ph_data_groupby_df_pivot = pd.pivot_table(ph_data_groupby_df, index=['Nom', 'ph_avt'], columns=['Type'], aggfunc=np.sum)
+    ph_merged = ph_data_groupby_df_pivot.merge(ph_data, on=['Nom','ph_avt'])
+    ph_drop = ph_merged.drop(['Type'], axis=1)
+    ph_final = ph_drop.drop_duplicates(subset =['Nom', 'ph_avt'])
+  
+    ph_final.to_csv(os.path.join(datapath, "data_ph.csv"), sep='\t', encoding="latin-1")
+
+
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Plaquettes                          #########################
+########################################################################################################## 
+##########################################################################################################     
+    
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_plq = pd.read_csv(os.path.join(datapath, "plq.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_plq = cleanDataframe(csv_plq)
+    patients_inPlq = np.unique(csv_plq.index.get_level_values(0).astype(str))
+
+
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_plq = patient in patients_inPlq
+        count = {t: 0 for t in transfusions}
+        sub_trans = csv_transfusion.loc[patient]
+        sub_plq = None
+        if get_plq:
+            sub_plq = csv_plq.loc[patient]
+                    
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_plq], [ sub_plq]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False)
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    outdf.to_csv(os.path.join(datapath, "data_plq_temp.csv"), sep='\t', encoding="latin-1")
+    
+    plq_data = pd.read_csv(os.path.join(datapath, "data_plq_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    plq_data.columns = ['Nom', 'Type', 'heure', 'plq_del_avt', 'plq_avt', 'plq_del_ap', 'plq_ap']
+    
+    plq_data['Type'] = plq_data['Type'].astype(str).str[:8]
+    plq_data_df = pd.DataFrame(plq_data)
+
+    plq_data_groupby = plq_data_df.groupby(by=['Nom', 'plq_avt', 'Type']).size()
+    plq_data_groupby_df = plq_data_groupby.to_frame()
+    plq_data_groupby_df_pivot = pd.pivot_table(plq_data_groupby_df, index=['Nom', 'plq_avt'], columns=['Type'], aggfunc=np.sum)
+    plq_merged = plq_data_groupby_df_pivot.merge(plq_data, on=['Nom','plq_avt'])
+    plq_drop = plq_merged.drop(['Type'], axis=1)
+    plq_final = plq_drop.drop_duplicates(subset =['Nom', 'plq_avt'])
+  
+    plq_final.to_csv(os.path.join(datapath, "data_plq.csv"), sep='\t', encoding="latin-1")
+
+    
+##########################################################################################################    
+##########################################################################################################   
+###########                                  TCA                             #########################
+########################################################################################################## 
+##########################################################################################################
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_tca = pd.read_csv(os.path.join(datapath, "tca.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_tca = cleanDataframe(csv_tca)
+    patients_inTca = np.unique(csv_tca.index.get_level_values(0).astype(str)) 
+
+    
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_tca = patient in patients_inTca                                 # Récupère le nom du patient dans le fichier du TCA
+        
+        count = {t: 0 for t in transfusions}
+
+        sub_trans = csv_transfusion.loc[patient]
+        sub_tca = None
+        if get_tca:
+            sub_tca = csv_tca.loc[patient]
+            
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_tca], [sub_tca]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False) 
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    
+    
+    outdf.to_csv(os.path.join(datapath, "data_tca_temp.csv"), sep='\t', encoding="latin-1")
+    
+    tca_data = pd.read_csv(os.path.join(datapath, "data_tca_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    tca_data.columns = ['Nom', 'Type', 'heure', 'tcar_del_avt', 'tcar_avt', 'tcar_del_ap', 'tcar_ap', 'tca_del_ap', 'tca_ap', 'tca_del_avt', 'tca_avt']
+    
+    tca_data['Type'] = tca_data['Type'].astype(str).str[:8]
+    
+    tca_data_df = pd.DataFrame(tca_data)
+
+    tca_data_groupby = tca_data_df.groupby(by=['Nom', 'tca_avt', 'Type']).size()
+    tca_data_groupby_df = tca_data_groupby.to_frame()
+    tca_data_groupby_df_pivot = pd.pivot_table(tca_data_groupby_df, index=['Nom', 'tca_avt'], columns=['Type'], aggfunc=np.sum)
+    tca_merged = tca_data_groupby_df_pivot.merge(tca_data, on=['Nom','tca_avt'])
+    tca_drop = tca_merged.drop(['Type', 'tcar_del_ap', 'tcar_ap', 'tcar_del_avt', 'tcar_avt'], axis=1)
+    tca_final = tca_drop.drop_duplicates(subset =['Nom', 'tca_avt'])
+  
+    tca_final.to_csv(os.path.join(datapath, "data_tca.csv"), sep='\t', encoding="latin-1")
+
+    
+##########################################################################################################    
+##########################################################################################################   
+###########                                  TCA     ratio                       #########################
+########################################################################################################## 
+##########################################################################################################
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_tcar = pd.read_csv(os.path.join(datapath, "tca.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_tcar = cleanDataframe(csv_tca)
+    patients_inTcar = np.unique(csv_tcar.index.get_level_values(0).astype(str)) 
+
+    
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_tcar = patient in patients_inTcar                                 # Récupère le nom du patient dans le fichier du TCA
+        
+        count = {t: 0 for t in transfusions}
+
+        sub_trans = csv_transfusion.loc[patient]
+        sub_tcar = None
+        if get_tcar:
+            sub_tcar = csv_tcar.loc[patient]
+            
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_tcar], [sub_tcar]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False) 
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    
+    
+    outdf.to_csv(os.path.join(datapath, "data_tcar_temp.csv"), sep='\t', encoding="latin-1")
+    
+    tcar_data = pd.read_csv(os.path.join(datapath, "data_tca_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    tcar_data.columns = ['Nom', 'Type', 'heure', 'tcar_del_avt', 'tcar_avt', 'tcar_del_ap', 'tcar_ap', 'tca_del_ap', 'tca_ap', 'tca_del_avt', 'tca_avt']
+    
+    tcar_data['Type'] = tcar_data['Type'].astype(str).str[:8]
+    
+    tcar_data_df = pd.DataFrame(tcar_data)
+
+    tcar_data_groupby = tcar_data_df.groupby(by=['Nom', 'tcar_avt', 'Type']).size()
+    tcar_data_groupby_df = tcar_data_groupby.to_frame()
+    tcar_data_groupby_df_pivot = pd.pivot_table(tcar_data_groupby_df, index=['Nom', 'tcar_avt'], columns=['Type'], aggfunc=np.sum)
+    tcar_merged = tcar_data_groupby_df_pivot.merge(tca_data, on=['Nom','tcar_avt'])
+    tcar_drop = tcar_merged.drop(['Type', 'tca_del_ap', 'tca_ap', 'tca_del_avt', 'tca_avt'], axis=1)
+    tcar_final = tcar_drop.drop_duplicates(subset =['Nom', 'tcar_avt'])
+  
+    tcar_final.to_csv(os.path.join(datapath, "data_tcar.csv"), sep='\t', encoding="latin-1")
+
+
+##########################################################################################################    
+##########################################################################################################   
+###########                                  Temps de quick                      #########################
+########################################################################################################## 
+##########################################################################################################
+    
+    #############################################################
+    # Récupération des données dans les fichiers source brut    #
+    # le Fichier transfusion.csv contient le nom 
+    #############################################################
+    csv_transfusion = pd.read_csv(os.path.join(datapath, "transfusion.csv"), encoding="latin-1", sep=';', index_col=[1, 2], header=5)
+    csv_transfusion = cleanDataframe(csv_transfusion)
+    patients_inTransfusion = np.unique(csv_transfusion.index.get_level_values(0).astype(str))
+
+    csv_tq = pd.read_csv(os.path.join(datapath, "tptq.csv"), encoding="latin-1", sep='\t', index_col=[0, 3, 9], header=5)
+    csv_tq = cleanDataframe(csv_tq)
+    patients_inTq = np.unique(csv_tq.index.get_level_values(0).astype(str)) 
+
+    
+    ######################################################################
+
+    transfusions = np.unique(csv_transfusion.index.get_level_values(1))             # permet de récupérer le numéro d'index 
+    outdf = {}
+    n = 0                                                                           # Commencer par le patient n=0 
+    
+    for patient in tqdm(patients_inTransfusion):                         
+        n += 1                                                                      # aller au patient suivant avec un pas de 1
+        get_tq = patient in patients_inTq                                 # Récupère le nom du patient dans le fichier du calcium
+        
+        count = {t: 0 for t in transfusions}
+
+        sub_trans = csv_transfusion.loc[patient]
+        sub_tq = None
+        if get_tq:
+            sub_tq = csv_tq.loc[patient]
+            
+        for i, transfusion in enumerate(sub_trans.index):           # 'enumerate' permet de lancer une loop dans la requête
+            count[transfusion] += 1                                 # Dit de faire un pas de 1 dans l'énumération
+            transfusion += ' '+str(count[transfusion])              # 'transfusion' devient une chaine de charactère
+            trans_heure = formatTime(sub_trans.iloc[i, 3])
+            outdf[(patient, transfusion)] = {('heure', ''): trans_heure}
+            # utilisation de la fonction 'zip' de python qui permet d'associer différentes tables entre elles
+            for boolean, df in zip([get_tq], [sub_tq]):
+                if boolean:
+                    for param in np.unique(df.index.get_level_values(0)): # Axel: ici aussi utiliser le nom de la colonne dans get_level_values serait plus clair que d'utiliser 0
+                        for k, v in getDelaiValeurFromHour(df.loc[param], trans_heure).items():
+                            if param == ".TP %":                                                    # converti '.TP%' en 'TP%'
+                                param = "TP %"                                                      # converti '.TP%' en 'TP%'
+                            outdf[(patient, transfusion)][(param, k)] = v
+                            
+    outdf = pd.DataFrame.from_dict(outdf).T
+    outdf = outdf.sort_index(ascending=False) 
+    outdf.insert(0, "Centre", 'PSL', allow_duplicates=False)
+    
+    
+    outdf.to_csv(os.path.join(datapath, "data_tq_temp.csv"), sep='\t', encoding="latin-1")
+    
+    tq_data = pd.read_csv(os.path.join(datapath, "data_tq_temp.csv"), encoding="latin-1", sep='\t', index_col=[2])
+    tq_data.columns = ['Nom', 'Type', 'heure', 'tpp_del_avt', 'tpp_avt', 'tpp_del_ap', 'tpp_ap', 'tq_del_avt', 'tq_avt', 'tq_del_ap', 'tq_ap', 'tp_del_avt', 'tp_avt', 'tp_del_ap', 'tp_ap']
+     
+    tq_data['Type'] = tq_data['Type'].astype(str).str[:8]
+    
+    tq_data_df = pd.DataFrame(tq_data)
+
+    tq_data_groupby = tq_data_df.groupby(by=['Nom', 'tq_avt', 'Type']).size()
+    tq_data_groupby_df = tq_data_groupby.to_frame()
+    tq_data_groupby_df_pivot = pd.pivot_table(tq_data_groupby_df, index=['Nom', 'tq_avt'], columns=['Type'], aggfunc=np.sum)
+    tq_merged = tq_data_groupby_df_pivot.merge(tq_data, on=['Nom','tq_avt'])
+    tq_drop = tq_merged.drop(['Type', 'tpp_del_avt', 'tpp_avt', 'tpp_del_ap', 'tpp_ap', 'tp_del_avt', 'tp_avt', 'tp_del_ap', 'tp_ap'], axis=1)
+    tq_final = tq_drop.drop_duplicates(subset =['Nom', 'tq_avt'])
+  
+    tq_final.to_csv(os.path.join(datapath, "data_tq.csv"), sep='\t', encoding="latin-1")
